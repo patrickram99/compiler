@@ -1,0 +1,16 @@
+digraph AST {
+  node [shape=box];
+Node1 [label="Program"];
+Node2 [label="ExpressionStatement"];
+Node3 [label="InfixExpression: +"];
+Node4 [label="IntegerLiteral: 1"];
+Node3 -> Node4;
+Node3 -> Node4;
+Node5 [label="IntegerLiteral: 1"];
+Node3 -> Node5;
+Node3 -> Node5;
+Node2 -> Node3;
+Node2 -> Node3;
+Node1 -> Node2;
+Node1 -> Node2;
+}

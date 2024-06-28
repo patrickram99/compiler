@@ -1,6 +1,12 @@
 package lexer
 
-import "main/token"
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"main/token"
+	"os"
+)
 
 type Lexer struct {
 	input        string
@@ -143,4 +149,28 @@ func New(input string) *Lexer {
 	l := &Lexer{input: input}
 	l.readChar()
 	return l
+}
+
+const PROMPT = "Speak Noooowww >> "
+
+func Start(input io.Reader, output io.Writer) {
+	scanner := bufio.NewScanner(input)
+
+	for {
+		fmt.Print(PROMPT)
+		scanned := scanner.Scan()
+		if !scanned {
+			return
+		}
+		line := scanner.Text()
+		l := New(line)
+
+		for tok := l.NextToken(); tok.Type != token.EOF; tok = l.NextToken() {
+			fmt.Fprintf(output, "%+v\n", tok)
+		}
+	}
+}
+
+func main() {
+	Start(os.Stdin, os.Stdout)
 }
