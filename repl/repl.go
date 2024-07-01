@@ -42,6 +42,12 @@ func Start(in io.Reader, out io.Writer) {
 			continue
 		}
 		evaluated := evaluator.Eval(program, env)
+		err = evaluator.GenerateMIPS(program)
+		if err != nil {
+			fmt.Printf("Error al generar el código MIPS: %v\n", err)
+			return
+		}
+		fmt.Println("Código MIPS generado y guardado en out.s")
 		if evaluated != nil {
 			io.WriteString(out, evaluated.Inspect())
 			io.WriteString(out, "\n")

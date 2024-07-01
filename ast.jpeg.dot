@@ -2,14 +2,10 @@ digraph AST {
   node [shape=box];
 Node1 [label="Program"];
 Node2 [label="ExpressionStatement"];
-Node3 [label="CallExpression"];
-Node4 [label="Variable: SpeakNow"];
+Node3 [label="InfixExpression: +"];
+Node4 [label="IntegerLiteral: 12"];
 Node3 -> Node4;
-Node5 [label="InfixExpression: +"];
-Node6 [label="IntegerLiteral: 4"];
-Node5 -> Node6;
-Node7 [label="IntegerLiteral: 5"];
-Node5 -> Node7;
+Node5 [label="IntegerLiteral: 15"];
 Node3 -> Node5;
 Node2 -> Node3;
 Node1 -> Node2;
