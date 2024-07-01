@@ -1,6 +1,7 @@
 package repl
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"main/compiler"
@@ -41,14 +42,18 @@ func Start(filePath string, out io.Writer) {
 
 	PrintAST(program, "  ")
 
-	/* Create Graphviz image
+	// Create Graphviz image
 	err = CreateGraphvizImage(program, "ast.jpeg")
 	if err != nil {
 		log.Fatalf("Error generating AST: %v", err)
 	} else {
 		log.Println("AST saved in: ast.jpeg")
 	}
-	*/
+
+	mipsCode := compiler.GenerateMIPS(program)
+	fmt.Println(mipsCode) // Print the generated code
+
+	writeToFile("out.s", mipsCode)
 
 	if len(p.Errors()) != 0 {
 		printParserErrors(out, p.Errors())
@@ -56,9 +61,6 @@ func Start(filePath string, out io.Writer) {
 	}
 
 	evaluated := evaluator.Eval(program, env)
-	mips := compiler.GenerateMIPS(program)
-
-	writeToFile("out.s", mips)
 
 	if evaluated != nil {
 		io.WriteString(out, evaluated.Inspect())
