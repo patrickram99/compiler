@@ -20,6 +20,8 @@ func GenerateMIPS(node ast.Node) string {
 	writeLines(&output, []string{
 		".data",
 		"newline: .asciiz \"\\n\"",
+		"true_str: .asciiz \"true\"",
+		"false_str: .asciiz \"false\"",
 		".text",
 		".globl main",
 		"main:",
@@ -44,16 +46,15 @@ func writeLines(output *strings.Builder, lines []string) {
 func writeLine(output *strings.Builder, line string) {
 	output.WriteString(line + "\n")
 }
-
-func generateNode(output *strings.Builder, node ast.Node) (int, bool) {
+func generateNode(output *strings.Builder, node ast.Node) (int, string) {
 	switch n := node.(type) {
 	case *ast.Program:
 		var lastReg int
-		var isFloat bool
+		var lastType string
 		for _, stmt := range n.Statements {
-			lastReg, isFloat = generateNode(output, stmt)
+			lastReg, lastType = generateNode(output, stmt)
 		}
-		return lastReg, isFloat
+		return lastReg, lastType
 	case *ast.ExpressionStatement:
 		return generateNode(output, n.Expression)
 	case *ast.InfixExpression:
@@ -61,89 +62,180 @@ func generateNode(output *strings.Builder, node ast.Node) (int, bool) {
 	case *ast.IntegerLiteral:
 		reg := getNextIntRegister()
 		writeLine(output, fmt.Sprintf("li $t%d, %d", reg, n.Value))
-		return reg, false
+		return reg, "int"
 	case *ast.FloatLiteral:
 		reg := getNextFloatRegister()
 		writeLine(output, fmt.Sprintf("li.s $f%d, %f", reg, n.Value))
-		return reg, true
+		return reg, "float"
+	case *ast.Boolean:
+		reg := getNextIntRegister()
+		if n.Value {
+			writeLine(output, fmt.Sprintf("li $t%d, 1", reg))
+		} else {
+			writeLine(output, fmt.Sprintf("li $t%d, 0", reg))
+		}
+		return reg, "bool"
 	case *ast.CallExpression:
 		if ident, ok := n.Function.(*ast.Variable); ok && ident.Value == "SpeakNow" {
 			return generateSpeakNow(output, n)
 		}
+	case *ast.IfExpression:
+		return generateIfExpression(output, n)
+	case *ast.BlockStatement:
+		return generateBlockStatement(output, n)
 	}
-	return 0, false
+	return 0, ""
 }
 
-func generateInfixExpression(output *strings.Builder, node *ast.InfixExpression) (int, bool) {
-	leftReg, leftIsFloat := generateNode(output, node.Left)
-	rightReg, rightIsFloat := generateNode(output, node.Right)
+func generateInfixExpression(output *strings.Builder, node *ast.InfixExpression) (int, string) {
+	leftReg, leftType := generateNode(output, node.Left)
+	rightReg, rightType := generateNode(output, node.Right)
 
-	isFloat := leftIsFloat || rightIsFloat
-
-	if isFloat {
-		if !leftIsFloat {
-			// Convert left integer to float
-			floatReg := getNextFloatRegister()
-			writeLine(output, fmt.Sprintf("mtc1 $t%d, $f%d", leftReg, floatReg))
-			writeLine(output, fmt.Sprintf("cvt.s.w $f%d, $f%d", floatReg, floatReg))
-			leftReg = floatReg
-		}
-		if !rightIsFloat {
-			// Convert right integer to float
-			floatReg := getNextFloatRegister()
-			writeLine(output, fmt.Sprintf("mtc1 $t%d, $f%d", rightReg, floatReg))
-			writeLine(output, fmt.Sprintf("cvt.s.w $f%d, $f%d", floatReg, floatReg))
-			rightReg = floatReg
-		}
-
-		resultReg := getNextFloatRegister()
-		switch node.Operator {
-		case "+":
-			writeLine(output, fmt.Sprintf("add.s $f%d, $f%d, $f%d", resultReg, leftReg, rightReg))
-		case "-":
-			writeLine(output, fmt.Sprintf("sub.s $f%d, $f%d, $f%d", resultReg, leftReg, rightReg))
-		case "*":
-			writeLine(output, fmt.Sprintf("mul.s $f%d, $f%d, $f%d", resultReg, leftReg, rightReg))
-		case "/":
-			writeLine(output, fmt.Sprintf("div.s $f%d, $f%d, $f%d", resultReg, leftReg, rightReg))
-		}
-		return resultReg, true
+	if leftType == "float" || rightType == "float" {
+		return generateFloatInfixExpression(output, node.Operator, leftReg, rightReg, leftType, rightType)
+	} else if leftType == "bool" || rightType == "bool" {
+		return generateBoolInfixExpression(output, node.Operator, leftReg, rightReg)
 	} else {
-		resultReg := getNextIntRegister()
-		switch node.Operator {
-		case "+":
-			writeLine(output, fmt.Sprintf("add $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
-		case "-":
-			writeLine(output, fmt.Sprintf("sub $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
-		case "*":
-			writeLine(output, fmt.Sprintf("mul $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
-		case "/":
-			writeLine(output, fmt.Sprintf("div $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
-		}
-		return resultReg, false
+		return generateIntInfixExpression(output, node.Operator, leftReg, rightReg)
 	}
 }
 
-func generateSpeakNow(output *strings.Builder, node *ast.CallExpression) (int, bool) {
+func generateFloatInfixExpression(output *strings.Builder, operator string, leftReg, rightReg int, leftType, rightType string) (int, string) {
+	if leftType != "float" {
+		// Convert left integer to float
+		floatReg := getNextFloatRegister()
+		writeLine(output, fmt.Sprintf("mtc1 $t%d, $f%d", leftReg, floatReg))
+		writeLine(output, fmt.Sprintf("cvt.s.w $f%d, $f%d", floatReg, floatReg))
+		leftReg = floatReg
+	}
+	if rightType != "float" {
+		// Convert right integer to float
+		floatReg := getNextFloatRegister()
+		writeLine(output, fmt.Sprintf("mtc1 $t%d, $f%d", rightReg, floatReg))
+		writeLine(output, fmt.Sprintf("cvt.s.w $f%d, $f%d", floatReg, floatReg))
+		rightReg = floatReg
+	}
+
+	resultReg := getNextFloatRegister()
+	switch operator {
+	case "+":
+		writeLine(output, fmt.Sprintf("add.s $f%d, $f%d, $f%d", resultReg, leftReg, rightReg))
+	case "-":
+		writeLine(output, fmt.Sprintf("sub.s $f%d, $f%d, $f%d", resultReg, leftReg, rightReg))
+	case "*":
+		writeLine(output, fmt.Sprintf("mul.s $f%d, $f%d, $f%d", resultReg, leftReg, rightReg))
+	case "/":
+		writeLine(output, fmt.Sprintf("div.s $f%d, $f%d, $f%d", resultReg, leftReg, rightReg))
+	case "<", ">", "<=", ">=", "==", "!=":
+		intResultReg := getNextIntRegister()
+		writeLine(output, fmt.Sprintf("c.%s.s $f%d, $f%d", floatComparisonOp(operator), leftReg, rightReg))
+		writeLine(output, fmt.Sprintf("li $t%d, 1", intResultReg))
+		writeLine(output, fmt.Sprintf("bc1t float_true_%d", labelCount))
+		writeLine(output, fmt.Sprintf("li $t%d, 0", intResultReg))
+		writeLine(output, fmt.Sprintf("float_true_%d:", labelCount))
+		labelCount++
+		return intResultReg, "bool"
+	}
+	return resultReg, "float"
+}
+
+func generateIntInfixExpression(output *strings.Builder, operator string, leftReg, rightReg int) (int, string) {
+	resultReg := getNextIntRegister()
+	switch operator {
+	case "+":
+		writeLine(output, fmt.Sprintf("add $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+	case "-":
+		writeLine(output, fmt.Sprintf("sub $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+	case "*":
+		writeLine(output, fmt.Sprintf("mul $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+	case "/":
+		writeLine(output, fmt.Sprintf("div $t%d, $t%d", leftReg, rightReg))
+		writeLine(output, fmt.Sprintf("mflo $t%d", resultReg))
+	case "%":
+		writeLine(output, fmt.Sprintf("div $t%d, $t%d", leftReg, rightReg))
+		writeLine(output, fmt.Sprintf("mfhi $t%d", resultReg))
+	case "<":
+		writeLine(output, fmt.Sprintf("slt $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+		return resultReg, "bool"
+	case ">":
+		writeLine(output, fmt.Sprintf("sgt $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+		return resultReg, "bool"
+	case "<=":
+		writeLine(output, fmt.Sprintf("sle $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+		return resultReg, "bool"
+	case ">=":
+		writeLine(output, fmt.Sprintf("sge $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+		return resultReg, "bool"
+	case "==":
+		writeLine(output, fmt.Sprintf("seq $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+		return resultReg, "bool"
+	case "!=":
+		writeLine(output, fmt.Sprintf("sne $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+		return resultReg, "bool"
+	default:
+		fmt.Printf("Unsupported integer operation: %s\n", operator)
+		return 0, "int"
+	}
+	return resultReg, "int"
+}
+
+func generateBoolInfixExpression(output *strings.Builder, operator string, leftReg, rightReg int) (int, string) {
+	resultReg := getNextIntRegister()
+	switch operator {
+	case "&&":
+		writeLine(output, fmt.Sprintf("and $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+	case "||":
+		writeLine(output, fmt.Sprintf("or $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+	case "==":
+		writeLine(output, fmt.Sprintf("xor $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+		writeLine(output, fmt.Sprintf("sltiu $t%d, $t%d, 1", resultReg, resultReg))
+	case "!=":
+		writeLine(output, fmt.Sprintf("xor $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+		writeLine(output, fmt.Sprintf("sltu $t%d, $zero, $t%d", resultReg, resultReg))
+	default:
+		fmt.Printf("Unsupported boolean operation: %s\n", operator)
+		return 0, "bool"
+	}
+	return resultReg, "bool"
+}
+
+func generateSpeakNow(output *strings.Builder, node *ast.CallExpression) (int, string) {
 	if len(node.Arguments) != 1 {
 		fmt.Println("Error: SpeakNow expects exactly one argument")
-		return 0, false
+		return 0, ""
 	}
 
-	reg, isFloat := generateNode(output, node.Arguments[0])
+	reg, valType := generateNode(output, node.Arguments[0])
 
-	if isFloat {
-		writeLines(output, []string{
-			fmt.Sprintf("mov.s $f12, $f%d", reg),
-			"li $v0, 2", // System call for print float
-			"syscall",
-		})
-	} else {
+	switch valType {
+	case "int":
 		writeLines(output, []string{
 			fmt.Sprintf("move $a0, $t%d", reg),
 			"li $v0, 1", // System call for print integer
 			"syscall",
 		})
+	case "float":
+		writeLines(output, []string{
+			fmt.Sprintf("mov.s $f12, $f%d", reg),
+			"li $v0, 2", // System call for print float
+			"syscall",
+		})
+	case "bool":
+		labelFalse := getNextLabel()
+		labelEnd := getNextLabel()
+		writeLines(output, []string{
+			fmt.Sprintf("beqz $t%d, %s", reg, labelFalse),
+			"la $a0, true_str",
+			"j " + labelEnd,
+			labelFalse + ":",
+			"la $a0, false_str",
+			labelEnd + ":",
+			"li $v0, 4", // System call for print string
+			"syscall",
+		})
+	default:
+		fmt.Printf("Unsupported type for SpeakNow: %s\n", valType)
+		return 0, ""
 	}
 
 	writeLines(output, []string{
@@ -152,7 +244,26 @@ func generateSpeakNow(output *strings.Builder, node *ast.CallExpression) (int, b
 		"syscall",
 	})
 
-	return reg, isFloat
+	return reg, valType
+}
+
+func floatComparisonOp(operator string) string {
+	switch operator {
+	case "<":
+		return "lt"
+	case ">":
+		return "gt"
+	case "<=":
+		return "le"
+	case ">=":
+		return "ge"
+	case "==":
+		return "eq"
+	case "!=":
+		return "ne"
+	default:
+		return ""
+	}
 }
 
 func getNextIntRegister() int {
@@ -170,4 +281,76 @@ func getNextFloatRegister() int {
 func getNextLabel() string {
 	labelCount++
 	return fmt.Sprintf("label_%d", labelCount)
+}
+
+func generateIfExpression(output *strings.Builder, ifExpr *ast.IfExpression) (int, string) {
+	condReg, condType := generateNode(output, ifExpr.Condition)
+	if condType != "bool" {
+		fmt.Println("Error: If condition must be a boolean expression")
+		return 0, ""
+	}
+
+	labelElse := getNextLabel()
+	labelEnd := getNextLabel()
+
+	// If condition is false, jump to else
+	writeLine(output, fmt.Sprintf("beqz $t%d, %s", condReg, labelElse))
+
+	// Generate code for consequence
+	consequenceReg, consequenceType := generateNode(output, ifExpr.Consequence)
+
+	// Jump to end after consequence
+	writeLine(output, fmt.Sprintf("j %s", labelEnd))
+
+	// Else label
+	writeLine(output, fmt.Sprintf("%s:", labelElse))
+
+	var alternativeReg int
+	var alternativeType string
+
+	// Generate code for alternative (if it exists)
+	if ifExpr.Alternative != nil {
+		alternativeReg, alternativeType = generateNode(output, ifExpr.Alternative)
+	} else {
+		// If there's no alternative, use a dummy value
+		alternativeReg = getNextIntRegister()
+		writeLine(output, fmt.Sprintf("li $t%d, 0", alternativeReg)) // Load 0 as a default value
+		alternativeType = "int"
+	}
+
+	// End label
+	writeLine(output, fmt.Sprintf("%s:", labelEnd))
+
+	// If types are different, we need to handle this
+	// For simplicity, we'll use a phi-like approach
+	resultReg := getNextIntRegister()
+	if consequenceType == alternativeType {
+		if consequenceType == "float" {
+			writeLine(output, fmt.Sprintf("mov.s $f%d, $f%d", resultReg, consequenceReg))
+			writeLine(output, fmt.Sprintf("mov.s $f%d, $f%d", resultReg, alternativeReg))
+		} else {
+			writeLine(output, fmt.Sprintf("move $t%d, $t%d", resultReg, consequenceReg))
+			writeLine(output, fmt.Sprintf("move $t%d, $t%d", resultReg, alternativeReg))
+		}
+	} else {
+		fmt.Printf("Warning: Mismatched types in if-else: %s and %s\n", consequenceType, alternativeType)
+		// Here you might want to implement type conversion or handle this case differently
+		// For now, we'll just use the consequence
+		if consequenceType == "float" {
+			writeLine(output, fmt.Sprintf("mov.s $f%d, $f%d", resultReg, consequenceReg))
+		} else {
+			writeLine(output, fmt.Sprintf("move $t%d, $t%d", resultReg, consequenceReg))
+		}
+	}
+
+	return resultReg, consequenceType
+}
+
+func generateBlockStatement(output *strings.Builder, block *ast.BlockStatement) (int, string) {
+	var lastReg int
+	var lastType string
+	for _, statement := range block.Statements {
+		lastReg, lastType = generateNode(output, statement)
+	}
+	return lastReg, lastType
 }

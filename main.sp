@@ -1,1 +1,5 @@
-SpeakNow(2 - 2.5 * 2 - 25 + 45 - ( 2 * 4 - 5) )
+LoverEra ( 5 == 5 ) {
+    SpeakNow(2 * 5 - 45)
+} RepEra {
+    SpeakNow(BadBlood)
+}
