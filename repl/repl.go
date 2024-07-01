@@ -7,6 +7,7 @@ import (
 	"log"
 	"main/evaluator"
 	"main/lexer"
+	"main/object"
 	"main/parser"
 )
 
@@ -14,6 +15,7 @@ const PROMPT = "Speak Noooowww >> "
 
 func Start(in io.Reader, out io.Writer) {
 	scanner := bufio.NewScanner(in)
+	env := object.NewEnvironment()
 	for {
 		fmt.Printf(PROMPT)
 		scanned := scanner.Scan()
@@ -27,7 +29,7 @@ func Start(in io.Reader, out io.Writer) {
 
 		// PrintAST(program, "    ")
 
-		// Create Graphviz image
+		/* Create Graphviz image */
 		err := CreateGraphvizImage(program, "ast.jpeg")
 		if err != nil {
 			log.Fatalf("Error generado AST: %v", err)
@@ -39,7 +41,7 @@ func Start(in io.Reader, out io.Writer) {
 			printParserErrors(out, p.Errors())
 			continue
 		}
-		evaluated := evaluator.Eval(program)
+		evaluated := evaluator.Eval(program, env)
 		if evaluated != nil {
 			io.WriteString(out, evaluated.Inspect())
 			io.WriteString(out, "\n")

@@ -23,6 +23,7 @@ const (
 	EXCL    = "!"
 	TIMES   = "*"
 	DIVIDES = "/"
+	COLON   = ":"
 
 	LT = "<"
 	GT = ">"
@@ -34,10 +35,12 @@ const (
 	COMMA     = ","
 	SEMICOLON = ";"
 
-	LPAREN = "("
-	RPAREN = ")"
-	LBRACE = "{"
-	RBRACE = "}"
+	LPAREN   = "("
+	RPAREN   = ")"
+	LBRACE   = "{"
+	RBRACE   = "}"
+	LBRACKET = "["
+	RBRACKET = "]"
 
 	// Palabras clave
 	FUNCTION = "FUNCTION"
@@ -47,6 +50,8 @@ const (
 	IF       = "IF"
 	ELSE     = "ELSE"
 	RETURN   = "RETURN"
+
+	STRING = "STRING"
 )
 
 var palabras_reservadas = map[string]TokenType{

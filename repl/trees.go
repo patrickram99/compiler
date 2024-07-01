@@ -1,6 +1,7 @@
 package repl
 
 import (
+	"bufio"
 	"fmt"
 	"main/ast"
 	"os"
@@ -152,6 +153,8 @@ func generateDot(node ast.Node, parentID string, f *os.File) string {
 		}
 	case *ast.Boolean:
 		writeDotNode(dotNode{nodeID, fmt.Sprintf("Boolean: %v", n.Value)}, f)
+	case *ast.StringLiteral:
+		writeDotNode(dotNode{nodeID, fmt.Sprintf("String: %v", n.Value)}, f)
 	case *ast.IntegerLiteral:
 		writeDotNode(dotNode{nodeID, fmt.Sprintf("IntegerLiteral: %v", n.Value)}, f)
 	case *ast.FloatLiteral:
@@ -189,7 +192,7 @@ func generateDot(node ast.Node, parentID string, f *os.File) string {
 			writeDotEdge(nodeID, expressionID, f)
 		}
 	default:
-		writeDotNode(dotNode{nodeID, fmt.Sprintf("Unknown: %T", node)}, f)
+		writeDotNode(dotNode{nodeID, fmt.Sprintf("Desconocido: %T", node)}, f)
 	}
 
 	if parentID != "" {
@@ -200,16 +203,13 @@ func generateDot(node ast.Node, parentID string, f *os.File) string {
 }
 
 func CreateGraphvizImage(node ast.Node, filename string) error {
-	// Reset the node counter for each graph generation
 	nodeCounter = 0
 
-	// Ensure the directory exists
 	dir := filepath.Dir(filename)
 	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
 
-	// Open the .dot file
 	dotFilename := strings.TrimSuffix(filename, ".png") + ".dot"
 	f, err := os.Create(dotFilename)
 	if err != nil {
@@ -217,21 +217,59 @@ func CreateGraphvizImage(node ast.Node, filename string) error {
 	}
 	defer f.Close()
 
-	// Write the Graphviz header
 	fmt.Fprintln(f, "digraph AST {")
 	fmt.Fprintln(f, "  node [shape=box];")
 
-	// Generate the dot format
 	generateDot(node, "", f)
 
-	// Write the Graphviz footer
 	fmt.Fprintln(f, "}")
 
-	// Create the image using Graphviz
+	// Remove duplicate lines from the .dot file
+	if err := RemoveDuplicateLines(dotFilename); err != nil {
+		return fmt.Errorf("failed to remove duplicate lines: %v", err)
+	}
+
 	cmd := exec.Command("dot", "-Tpng", dotFilename, "-o", filename)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to generate image using graphviz: %v\nOutput: %s", err, string(output))
+	}
+
+	return nil
+}
+
+func RemoveDuplicateLines(filepath string) error {
+	file, err := os.Open(filepath)
+	if err != nil {
+		return fmt.Errorf("failed to open .dot file: %v", err)
+	}
+	defer file.Close()
+
+	lines := make(map[string]struct{})
+	var uniqueLines []string
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if _, exists := lines[line]; !exists {
+			lines[line] = struct{}{}
+			uniqueLines = append(uniqueLines, line)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading .dot file: %v", err)
+	}
+
+	// Write the unique lines back to the file
+	outputFile, err := os.Create(filepath)
+	if err != nil {
+		return fmt.Errorf("failed to write back to .dot file: %v", err)
+	}
+	defer outputFile.Close()
+
+	for _, line := range uniqueLines {
+		fmt.Fprintln(outputFile, line)
 	}
 
 	return nil
