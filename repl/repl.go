@@ -1,59 +1,71 @@
 package repl
 
 import (
-	"bufio"
-	"fmt"
 	"io"
 	"log"
+	"main/compiler"
 	"main/evaluator"
 	"main/lexer"
 	"main/object"
 	"main/parser"
+	"os"
 )
 
-const PROMPT = "Speak Noooowww >> "
+func writeToFile(filePath string, content string) error {
+	file, err := os.Create(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.WriteString(content)
+	if err != nil {
+		return err
+	}
+	return nil
+}
 
-func Start(in io.Reader, out io.Writer) {
-	scanner := bufio.NewScanner(in)
+func Start(filePath string, out io.Writer) {
 	env := object.NewEnvironment()
-	for {
-		fmt.Printf(PROMPT)
-		scanned := scanner.Scan()
-		if !scanned {
-			return
-		}
-		line := scanner.Text()
-		l := lexer.New(line)
-		p := parser.New(l)
-		program := p.ParseProgram()
 
-		// PrintAST(program, "    ")
+	// Read the entire file content
+	fileContent, err := os.ReadFile(filePath)
+	if err != nil {
+		log.Fatalf("Error reading file: %v", err)
+	}
 
-		/* Create Graphviz image */
-		err := CreateGraphvizImage(program, "ast.jpeg")
-		if err != nil {
-			log.Fatalf("Error generado AST: %v", err)
-		} else {
-			log.Println("AST guardado en: ast.jpeg")
-		}
+	// Process the file content as a single input string
+	line := string(fileContent)
+	l := lexer.New(line)
+	p := parser.New(l)
+	program := p.ParseProgram()
 
-		if len(p.Errors()) != 0 {
-			printParserErrors(out, p.Errors())
-			continue
-		}
-		evaluated := evaluator.Eval(program, env)
-		err = evaluator.GenerateMIPS(program)
-		if err != nil {
-			fmt.Printf("Error al generar el código MIPS: %v\n", err)
-			return
-		}
-		fmt.Println("Código MIPS generado y guardado en out.s")
-		if evaluated != nil {
-			io.WriteString(out, evaluated.Inspect())
-			io.WriteString(out, "\n")
-		}
+	PrintAST(program, "  ")
+
+	/* Create Graphviz image
+	err = CreateGraphvizImage(program, "ast.jpeg")
+	if err != nil {
+		log.Fatalf("Error generating AST: %v", err)
+	} else {
+		log.Println("AST saved in: ast.jpeg")
+	}
+	*/
+
+	if len(p.Errors()) != 0 {
+		printParserErrors(out, p.Errors())
+		return
+	}
+
+	evaluated := evaluator.Eval(program, env)
+	mips := compiler.GenerateMIPS(program)
+
+	writeToFile("out.s", mips)
+
+	if evaluated != nil {
+		io.WriteString(out, evaluated.Inspect())
+		io.WriteString(out, "\n")
 	}
 }
+
 func printParserErrors(out io.Writer, errors []string) {
 	for _, msg := range errors {
 		io.WriteString(out, "\t"+msg+"\n")
