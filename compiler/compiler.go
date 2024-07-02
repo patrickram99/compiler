@@ -10,6 +10,8 @@ var (
 	labelCount         int
 	intRegisterCount   int
 	floatRegisterCount int
+	stringLiterals     map[string]string
+	stringCount        int
 )
 
 var currentRegister int = 0
@@ -20,29 +22,42 @@ func getNextRegister() int {
 	return reg
 }
 
-func resetRegisterAllocation() {
-	currentRegister = 0
-}
-
 func GenerateMIPS(node ast.Node) string {
 	var output strings.Builder
+
+	// Initialize global variables
+	labelCount = 0
 	intRegisterCount = 0
 	floatRegisterCount = 0
+	stringLiterals = make(map[string]string)
+	stringCount = 0
 
 	writeLines(&output, []string{
 		".data",
 		"newline: .asciiz \"\\n\"",
 		"true_str: .asciiz \"true\"",
 		"false_str: .asciiz \"false\"",
+	})
+
+	// Pre-process the AST to collect string literals
+	collectStringLiterals(node)
+
+	// Add string literals to data section
+	for str, label := range stringLiterals {
+		writeLine(&output, fmt.Sprintf("%s: .asciiz \"%s\"", label, str))
+	}
+
+	writeLines(&output, []string{
 		".text",
 		".globl main",
 		"main:",
 	})
 
+	// Generate main program code
 	generateNode(&output, node)
 
 	writeLines(&output, []string{
-		"li $v0, 10",
+		"li $v0, 10", // Exit syscall
 		"syscall",
 	})
 
@@ -69,6 +84,13 @@ func generateNode(output *strings.Builder, node ast.Node) (int, string) {
 		return lastReg, lastType
 	case *ast.ExpressionStatement:
 		return generateNode(output, n.Expression)
+	case *ast.CallExpression:
+		if ident, ok := n.Function.(*ast.Variable); ok && ident.Value == "SpeakNow" {
+			return generateSpeakNow(output, n)
+		}
+	case *ast.StringLiteral:
+		return generateStringLiteral(output, n.Value)
+
 	case *ast.InfixExpression:
 		return generateInfixExpression(output, n)
 	case *ast.IntegerLiteral:
@@ -87,23 +109,176 @@ func generateNode(output *strings.Builder, node ast.Node) (int, string) {
 			writeLine(output, fmt.Sprintf("li $t%d, 0", reg))
 		}
 		return reg, "bool"
-	case *ast.CallExpression:
-		if ident, ok := n.Function.(*ast.Variable); ok && ident.Value == "SpeakNow" {
-			return generateSpeakNow(output, n)
-		}
 	case *ast.IfExpression:
 		return generateIfExpression(output, n)
 	case *ast.BlockStatement:
 		return generateBlockStatement(output, n)
+
 	}
 	return 0, ""
 }
+
+func generateSpeakNow(output *strings.Builder, node *ast.CallExpression) (int, string) {
+	if len(node.Arguments) != 1 {
+		fmt.Println("Error: SpeakNow expects exactly one argument")
+		return 0, ""
+	}
+
+	reg, valType := generateNode(output, node.Arguments[0])
+
+	switch valType {
+	case "int":
+		writeLines(output, []string{
+			fmt.Sprintf("move $a0, $t%d", reg),
+			"li $v0, 1", // System call for print integer
+			"syscall",
+		})
+	case "bool":
+		labelTrue := getNextLabel()
+		labelEnd := getNextLabel()
+		writeLines(output, []string{
+			fmt.Sprintf("beq $t%d, $zero, %s", reg, labelTrue),
+			"la $a0, true_str",
+			fmt.Sprintf("j %s", labelEnd),
+			fmt.Sprintf("%s:", labelTrue),
+			"la $a0, false_str",
+			fmt.Sprintf("%s:", labelEnd),
+			"li $v0, 4", // System call for print string
+			"syscall",
+		})
+	case "string":
+		writeLines(output, []string{
+			fmt.Sprintf("move $a0, $t%d", reg),
+			"li $v0, 4", // System call for print string
+			"syscall",
+		})
+	default:
+		fmt.Printf("Unsupported type for SpeakNow: %s\n", valType)
+		return 0, ""
+	}
+
+	writeLines(output, []string{
+		"li $v0, 4",
+		"la $a0, newline",
+		"syscall",
+	})
+
+	return reg, valType
+}
+
+func floatComparisonOp(operator string) string {
+	switch operator {
+	case "<":
+		return "lt"
+	case ">":
+		return "gt"
+	case "<=":
+		return "le"
+	case ">=":
+		return "ge"
+	case "==":
+		return "eq"
+	case "!=":
+		return "ne"
+	default:
+		return ""
+	}
+}
+
+func getNextIntRegister() int {
+	reg := intRegisterCount
+	intRegisterCount++
+	return reg
+}
+
+func getNextFloatRegister() int {
+	reg := floatRegisterCount
+	floatRegisterCount++
+	return reg
+}
+
+func getNextLabel() string {
+	labelCount++
+	return fmt.Sprintf("label_%d", labelCount)
+}
+
+func generateIfExpression(output *strings.Builder, ifExpr *ast.IfExpression) (int, string) {
+	condReg, _ := generateNode(output, ifExpr.Condition)
+
+	labelElse := getNextLabel()
+	labelEnd := getNextLabel()
+
+	writeLine(output, fmt.Sprintf("beq $t%d, $zero, %s", condReg, labelElse))
+
+	consequenceReg, consequenceType := generateNode(output, ifExpr.Consequence)
+
+	writeLine(output, fmt.Sprintf("j %s", labelEnd))
+	writeLine(output, fmt.Sprintf("%s:", labelElse))
+
+	if ifExpr.Alternative != nil {
+		generateNode(output, ifExpr.Alternative)
+	}
+
+	writeLine(output, fmt.Sprintf("%s:", labelEnd))
+
+	return consequenceReg, consequenceType
+}
+func generateBlockStatement(output *strings.Builder, block *ast.BlockStatement) (int, string) {
+	var lastReg int
+	var lastType string
+	for _, statement := range block.Statements {
+		lastReg, lastType = generateNode(output, statement)
+	}
+	return lastReg, lastType
+}
+
+// ----------------------------------- Helper Strings --------------------------------------------------------------
+
+func generateStringLiteral(output *strings.Builder, value string) (int, string) {
+	label, exists := stringLiterals[value]
+	if !exists {
+		label = fmt.Sprintf("str_%d", stringCount)
+		stringLiterals[value] = label
+		stringCount++
+		// Add the string to the data section
+		writeLine(output, fmt.Sprintf("%s: .asciiz \"%s\"", label, value))
+	}
+	reg := getNextRegister()
+	writeLine(output, fmt.Sprintf("la $t%d, %s", reg, label))
+	return reg, "string"
+}
+
+func collectStringLiterals(node ast.Node) {
+	switch n := node.(type) {
+	case *ast.Program:
+		for _, stmt := range n.Statements {
+			collectStringLiterals(stmt)
+		}
+	case *ast.ExpressionStatement:
+		collectStringLiterals(n.Expression)
+	case *ast.CallExpression:
+		for _, arg := range n.Arguments {
+			collectStringLiterals(arg)
+		}
+	case *ast.StringLiteral:
+		if _, exists := stringLiterals[n.Value]; !exists {
+			label := fmt.Sprintf("str_%d", stringCount)
+			stringLiterals[n.Value] = label
+			stringCount++
+		}
+		// ... handle other node types as needed ...
+	}
+}
+
+// ----------------------------------- Infix Expressions --------------------------------------------------------------
 
 func generateInfixExpression(output *strings.Builder, node *ast.InfixExpression) (int, string) {
 	leftReg, leftType := generateNode(output, node.Left)
 	rightReg, rightType := generateNode(output, node.Right)
 
-	if leftType == "float" || rightType == "float" {
+	if leftType == "string" || rightType == "string" {
+		return generateStringInfixExpression(output, node.Operator, leftReg, rightReg)
+	} else if leftType == "float" || rightType == "float" {
 		return generateFloatInfixExpression(output, node.Operator, leftReg, rightReg, leftType, rightType)
 	} else if leftType == "bool" || rightType == "bool" {
 		return generateBoolInfixExpression(output, node.Operator, leftReg, rightReg)
@@ -202,122 +377,25 @@ func generateBoolInfixExpression(output *strings.Builder, operator string, leftR
 	return resultReg, "bool"
 }
 
-func generateSpeakNow(output *strings.Builder, node *ast.CallExpression) (int, string) {
-	if len(node.Arguments) != 1 {
-		fmt.Println("Error: SpeakNow expects exactly one argument")
-		return 0, ""
-	}
-
-	reg, valType := generateNode(output, node.Arguments[0])
-
-	switch valType {
-	case "int":
-		writeLines(output, []string{
-			fmt.Sprintf("move $a0, $t%d", reg),
-			"li $v0, 1", // System call for print integer
-			"syscall",
-		})
-	case "bool":
-		labelFalse := getNextLabel()
-		labelEnd := getNextLabel()
-		writeLines(output, []string{
-			fmt.Sprintf("beq $t%d, $zero, %s", reg, labelFalse),
-			"la $a0, true_str",
-			fmt.Sprintf("j %s", labelEnd),
-			fmt.Sprintf("%s:", labelFalse),
-			"la $a0, false_str",
-			fmt.Sprintf("%s:", labelEnd),
-			"li $v0, 4", // System call for print string
-			"syscall",
-		})
-	default:
-		fmt.Printf("Unsupported type for SpeakNow: %s\n", valType)
-		return 0, ""
-	}
-
-	writeLines(output, []string{
-		"li $v0, 4",
-		"la $a0, newline",
-		"syscall",
-	})
-
-	return reg, valType
-}
-
-func floatComparisonOp(operator string) string {
+func generateStringInfixExpression(output *strings.Builder, operator string, leftReg, rightReg int) (int, string) {
+	resultReg := getNextRegister()
 	switch operator {
-	case "<":
-		return "lt"
-	case ">":
-		return "gt"
-	case "<=":
-		return "le"
-	case ">=":
-		return "ge"
+	case "+":
+		// Call a runtime function for string concatenation
+		writeLine(output, fmt.Sprintf("move $a0, $t%d", leftReg))
+		writeLine(output, fmt.Sprintf("move $a1, $t%d", rightReg))
+		writeLine(output, "jal concat_strings")
+		writeLine(output, fmt.Sprintf("move $t%d, $v0", resultReg))
 	case "==":
-		return "eq"
-	case "!=":
-		return "ne"
+		// Call a runtime function for string comparison
+		writeLine(output, fmt.Sprintf("move $a0, $t%d", leftReg))
+		writeLine(output, fmt.Sprintf("move $a1, $t%d", rightReg))
+		writeLine(output, "jal compare_strings")
+		writeLine(output, fmt.Sprintf("move $t%d, $v0", resultReg))
+	// ... handle other string operations ...
 	default:
-		return ""
+		fmt.Printf("Unsupported string operation: %s\n", operator)
+		return 0, "string"
 	}
-}
-
-func getNextIntRegister() int {
-	reg := intRegisterCount
-	intRegisterCount++
-	return reg
-}
-
-func getNextFloatRegister() int {
-	reg := floatRegisterCount
-	floatRegisterCount++
-	return reg
-}
-
-func getNextLabel() string {
-	labelCount++
-	return fmt.Sprintf("label_%d", labelCount)
-}
-func generateIfExpression(output *strings.Builder, ifExpr *ast.IfExpression) (int, string) {
-	resetRegisterAllocation()
-
-	// Generate code for the condition
-	condReg, _ := generateNode(output, ifExpr.Condition)
-
-	labelElse := getNextLabel()
-	labelEnd := getNextLabel()
-
-	// If condition is false, jump to else
-	writeLine(output, fmt.Sprintf("beq $t%d, $zero, %s", condReg, labelElse))
-
-	// Generate code for consequence
-	consequenceReg, consequenceType := generateNode(output, ifExpr.Consequence)
-
-	// Jump to end after consequence
-	writeLine(output, fmt.Sprintf("j %s", labelEnd))
-
-	// Else label
-	writeLine(output, fmt.Sprintf("%s:", labelElse))
-
-	// Generate code for alternative (if it exists)
-	if ifExpr.Alternative != nil {
-		_, alternativeType := generateNode(output, ifExpr.Alternative)
-		if consequenceType != alternativeType {
-			fmt.Printf("Warning: Mismatched types in if-else: %s and %s\n", consequenceType, alternativeType)
-		}
-	}
-
-	// End label
-	writeLine(output, fmt.Sprintf("%s:", labelEnd))
-
-	return consequenceReg, consequenceType
-}
-func generateBlockStatement(output *strings.Builder, block *ast.BlockStatement) (int, string) {
-	var lastReg int
-	var lastType string
-	for _, statement := range block.Statements {
-		lastReg, lastType = generateNode(output, statement)
-	}
-	return lastReg, lastType
+	return resultReg, "string"
 }
