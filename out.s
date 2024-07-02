@@ -9,9 +9,9 @@ move $fp, $sp
 sw $ra, 0($sp)
 addi $sp, $sp, -4
 .data
-fibonacci: .word 0
+omg: .word 0
 .text
-sw $t0, fibonacci
+sw $t0, omg
 lw $ra, 4($sp)
 addi $sp, $sp, 4
 jr $ra
