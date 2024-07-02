@@ -6,28 +6,61 @@ import (
 	"strings"
 )
 
+type SymbolTable struct {
+	symbols     map[string]*Symbol
+	parent      *SymbolTable
+	nextAddress int
+}
+
+type Symbol struct {
+	Name    string
+	Type    string
+	Address int
+}
+
+func NewSymbolTable() *SymbolTable {
+	return &SymbolTable{
+		symbols:     make(map[string]*Symbol),
+		nextAddress: 0,
+	}
+}
+
+func (st *SymbolTable) Define(name, typ string) *Symbol {
+	symbol := &Symbol{Name: name, Type: typ, Address: st.nextAddress}
+	st.symbols[name] = symbol
+	st.nextAddress += 4 // Assume all variables/parameters are 4 bytes
+	return symbol
+}
+
+func (st *SymbolTable) Resolve(name string) (*Symbol, bool) {
+	symbol, ok := st.symbols[name]
+	if !ok && st.parent != nil {
+		return st.parent.Resolve(name)
+	}
+	return symbol, ok
+}
+
+func (st *SymbolTable) NewEnclosedSymbolTable() *SymbolTable {
+	enclosed := NewSymbolTable()
+	enclosed.parent = st
+	return enclosed
+}
+
 var (
+	symbolTable        *SymbolTable
+	currentRegister    int
 	labelCount         int
+	functionName       string
 	intRegisterCount   int
 	floatRegisterCount int
 )
 
-var currentRegister int = 0
-
-func getNextRegister() int {
-	reg := currentRegister
-	currentRegister = (currentRegister + 1) % 8 // Use only $t0 to $t7
-	return reg
-}
-
-func resetRegisterAllocation() {
-	currentRegister = 0
-}
-
 func GenerateMIPS(node ast.Node) string {
 	var output strings.Builder
-	intRegisterCount = 0
-	floatRegisterCount = 0
+	symbolTable = NewSymbolTable()
+	currentRegister = 0
+	labelCount = 0
+	functionName = ""
 
 	writeLines(&output, []string{
 		".data",
@@ -36,67 +69,116 @@ func GenerateMIPS(node ast.Node) string {
 		"false_str: .asciiz \"false\"",
 		".text",
 		".globl main",
-		"main:",
 	})
 
-	generateNode(&output, node)
-
-	writeLines(&output, []string{
-		"li $v0, 10",
-		"syscall",
-	})
+	if program, ok := node.(*ast.Program); ok {
+		generateProgram(&output, program)
+	} else {
+		generateNode(&output, node)
+	}
 
 	return output.String()
 }
 
-func writeLines(output *strings.Builder, lines []string) {
-	for _, line := range lines {
-		output.WriteString(line + "\n")
+func generateProgram(output *strings.Builder, program *ast.Program) {
+	// Generate main function
+	writeLines(output, []string{
+		"main:",
+		"move $fp, $sp",
+		"sw $ra, 0($sp)",
+		"addi $sp, $sp, -4",
+	})
+
+	for _, statement := range program.Statements {
+		generateNode(output, statement)
 	}
+
+	// Main function epilogue
+	writeLines(output, []string{
+		"lw $ra, 4($sp)",
+		"addi $sp, $sp, 4",
+		"jr $ra",
+	})
 }
 
-func writeLine(output *strings.Builder, line string) {
-	output.WriteString(line + "\n")
-}
 func generateNode(output *strings.Builder, node ast.Node) (int, string) {
 	switch n := node.(type) {
 	case *ast.Program:
-		var lastReg int
-		var lastType string
-		for _, stmt := range n.Statements {
-			lastReg, lastType = generateNode(output, stmt)
-		}
-		return lastReg, lastType
+		generateProgram(output, n)
+		return 0, ""
 	case *ast.ExpressionStatement:
 		return generateNode(output, n.Expression)
 	case *ast.InfixExpression:
 		return generateInfixExpression(output, n)
 	case *ast.IntegerLiteral:
-		reg := getNextIntRegister()
+		reg := getNextRegister()
 		writeLine(output, fmt.Sprintf("li $t%d, %d", reg, n.Value))
 		return reg, "int"
-	case *ast.FloatLiteral:
-		reg := getNextFloatRegister()
-		writeLine(output, fmt.Sprintf("li.s $f%d, %f", reg, n.Value))
-		return reg, "float"
 	case *ast.Boolean:
-		reg := getNextIntRegister()
+		reg := getNextRegister()
 		if n.Value {
 			writeLine(output, fmt.Sprintf("li $t%d, 1", reg))
 		} else {
 			writeLine(output, fmt.Sprintf("li $t%d, 0", reg))
 		}
 		return reg, "bool"
+	case *ast.IfExpression:
+		return generateIfExpression(output, n)
+
+	case *ast.BlockStatement:
+		generateBlockStatement(output, n)
+		return 0, ""
+
 	case *ast.CallExpression:
 		if ident, ok := n.Function.(*ast.Variable); ok && ident.Value == "SpeakNow" {
 			return generateSpeakNow(output, n)
 		}
-	case *ast.IfExpression:
-		return generateIfExpression(output, n)
-	case *ast.BlockStatement:
-		return generateBlockStatement(output, n)
+	case *ast.LetStatement:
+		return generateLetStatement(output, n)
+	case *ast.Variable:
+		return generateVariable(output, n)
 	}
 	return 0, ""
+}
+
+func generateLetStatement(output *strings.Builder, node *ast.LetStatement) (int, string) {
+	valueReg, valueType := generateNode(output, node.Value)
+	symbol := symbolTable.Define(node.Name.Value, valueType)
+	if functionName == "" {
+		// Global variable
+		writeLine(output, fmt.Sprintf(".data"))
+		writeLine(output, fmt.Sprintf("%s: .word 0", node.Name.Value))
+		writeLine(output, fmt.Sprintf(".text"))
+		writeLine(output, fmt.Sprintf("sw $t%d, %s", valueReg, node.Name.Value))
+	} else {
+		// Local variable
+		writeLine(output, fmt.Sprintf("sw $t%d, -%d($fp)", valueReg, symbol.Address))
+	}
+	return valueReg, valueType
+}
+
+func generateVariable(output *strings.Builder, node *ast.Variable) (int, string) {
+	symbol, ok := symbolTable.Resolve(node.Value)
+	if !ok {
+		fmt.Printf("Error: Undefined variable %s\n", node.Value)
+		return 0, ""
+	}
+	resultReg := getNextRegister()
+	if functionName == "" {
+		// Global variable
+		writeLine(output, fmt.Sprintf("lw $t%d, %s", resultReg, node.Value))
+	} else if symbol.Address > 0 {
+		// Parameter
+		writeLine(output, fmt.Sprintf("lw $t%d, %d($fp)", resultReg, symbol.Address))
+	} else {
+		// Local variable
+		writeLine(output, fmt.Sprintf("lw $t%d, -%d($fp)", resultReg, -symbol.Address))
+	}
+	return resultReg, symbol.Type
+}
+
+func resetRegisterAllocation() {
+	currentRegister = 0
 }
 
 func generateInfixExpression(output *strings.Builder, node *ast.InfixExpression) (int, string) {
@@ -208,12 +290,12 @@ func generateSpeakNow(output *strings.Builder, node *ast.CallExpression) (int, s
 		return 0, ""
 	}
 
-	reg, valType := generateNode(output, node.Arguments[0])
+	argReg, argType := generateNode(output, node.Arguments[0])
 
-	switch valType {
+	switch argType {
 	case "int":
 		writeLines(output, []string{
-			fmt.Sprintf("move $a0, $t%d", reg),
+			fmt.Sprintf("move $a0, $t%d", argReg),
 			"li $v0, 1", // System call for print integer
 			"syscall",
 		})
@@ -221,7 +303,7 @@ func generateSpeakNow(output *strings.Builder, node *ast.CallExpression) (int, s
 		labelFalse := getNextLabel()
 		labelEnd := getNextLabel()
 		writeLines(output, []string{
-			fmt.Sprintf("beq $t%d, $zero, %s", reg, labelFalse),
+			fmt.Sprintf("beq $t%d, $zero, %s", argReg, labelFalse),
 			"la $a0, true_str",
 			fmt.Sprintf("j %s", labelEnd),
 			fmt.Sprintf("%s:", labelFalse),
@@ -231,17 +313,18 @@ func generateSpeakNow(output *strings.Builder, node *ast.CallExpression) (int, s
 			"syscall",
 		})
 	default:
-		fmt.Printf("Unsupported type for SpeakNow: %s\n", valType)
+		fmt.Printf("Unsupported type for SpeakNow: %s\n", argType)
 		return 0, ""
 	}
 
+	// Print newline
 	writeLines(output, []string{
 		"li $v0, 4",
 		"la $a0, newline",
 		"syscall",
 	})
 
-	return reg, valType
+	return argReg, argType
 }
 
 func floatComparisonOp(operator string) string {
@@ -279,10 +362,8 @@ func getNextLabel() string {
 	labelCount++
 	return fmt.Sprintf("label_%d", labelCount)
 }
-func generateIfExpression(output *strings.Builder, ifExpr *ast.IfExpression) (int, string) {
-	resetRegisterAllocation()
 
-	// Generate code for the condition
+func generateIfExpression(output *strings.Builder, ifExpr *ast.IfExpression) (int, string) {
 	condReg, _ := generateNode(output, ifExpr.Condition)
 
 	labelElse := getNextLabel()
@@ -292,7 +373,9 @@ func generateIfExpression(output *strings.Builder, ifExpr *ast.IfExpression) (in
 	writeLine(output, fmt.Sprintf("beq $t%d, $zero, %s", condReg, labelElse))
 
 	// Generate code for consequence
-	consequenceReg, consequenceType := generateNode(output, ifExpr.Consequence)
+	if ifExpr.Consequence != nil {
+		generateBlockStatement(output, ifExpr.Consequence)
+	}
 
 	// Jump to end after consequence
 	writeLine(output, fmt.Sprintf("j %s", labelEnd))
@@ -302,22 +385,116 @@ func generateIfExpression(output *strings.Builder, ifExpr *ast.IfExpression) (in
 
 	// Generate code for alternative (if it exists)
 	if ifExpr.Alternative != nil {
-		_, alternativeType := generateNode(output, ifExpr.Alternative)
-		if consequenceType != alternativeType {
-			fmt.Printf("Warning: Mismatched types in if-else: %s and %s\n", consequenceType, alternativeType)
-		}
+		generateBlockStatement(output, ifExpr.Alternative)
 	}
 
 	// End label
 	writeLine(output, fmt.Sprintf("%s:", labelEnd))
 
-	return consequenceReg, consequenceType
+	return 0, "" // If-expressions don't return a value in this implementation
 }
-func generateBlockStatement(output *strings.Builder, block *ast.BlockStatement) (int, string) {
-	var lastReg int
-	var lastType string
+
+func generateBlockStatement(output *strings.Builder, block *ast.BlockStatement) {
 	for _, statement := range block.Statements {
-		lastReg, lastType = generateNode(output, statement)
+		generateNode(output, statement)
 	}
-	return lastReg, lastType
+}
+
+func getNextRegister() int {
+	reg := currentRegister
+	currentRegister = (currentRegister + 1) % 8 // Use only $t0 to $t7
+	return reg
+}
+
+func writeLines(output *strings.Builder, lines []string) {
+	for _, line := range lines {
+		output.WriteString(line + "\n")
+	}
+}
+
+func writeLine(output *strings.Builder, line string) {
+	output.WriteString(line + "\n")
+}
+
+func generateFunction(output *strings.Builder, node *ast.FunctionLiteral) (int, string) {
+	prevFunctionName := functionName
+	functionName = fmt.Sprintf("func_%d", labelCount)
+	labelCount++
+
+	writeLine(output, fmt.Sprintf("%s:", functionName))
+
+	// Function prologue
+	writeLines(output, []string{
+		"sw $ra, 0($sp)",
+		"sw $fp, -4($sp)",
+		"move $fp, $sp",
+		fmt.Sprintf("addi $sp, $sp, -%d", 8+len(node.Parameters)*4),
+	})
+
+	// Save used registers
+	for i := 0; i < 8; i++ {
+		writeLine(output, fmt.Sprintf("sw $t%d, -%d($fp)", i, 12+i*4))
+	}
+	writeLine(output, fmt.Sprintf("addi $sp, $sp, -%d", 8*4))
+
+	// Create a new symbol table for the function's scope
+	enclosedSymbolTable := symbolTable.NewEnclosedSymbolTable()
+	prevSymbolTable := symbolTable
+	symbolTable = enclosedSymbolTable
+
+	// Add parameters to the symbol table
+	for i, param := range node.Parameters {
+		symbol := symbolTable.Define(param.Value, "int") // Assume all parameters are ints for now
+		symbol.Address = 4 * (i + 2)                     // Parameters are above the frame pointer
+	}
+
+	// Generate code for the function body
+	generateNode(output, node.Body)
+
+	// Function epilogue
+	writeLines(output, []string{
+		// Restore used registers
+		fmt.Sprintf("addi $sp, $sp, %d", 8*4),
+	})
+	for i := 0; i < 8; i++ {
+		writeLine(output, fmt.Sprintf("lw $t%d, -%d($fp)", i, 12+i*4))
+	}
+	writeLines(output, []string{
+		"move $sp, $fp",
+		"lw $ra, 0($sp)",
+		"lw $fp, -4($sp)",
+		"jr $ra",
+	})
+
+	// Restore the previous symbol table and function name
+	symbolTable = prevSymbolTable
+	functionName = prevFunctionName
+
+	return 0, "function"
+}
+
+func generateFunctionCall(output *strings.Builder, node *ast.CallExpression) (int, string) {
+	if ident, ok := node.Function.(*ast.Variable); ok && ident.Value == "SpeakNow" {
+		return generateSpeakNow(output, node)
+	}
+
+	// Evaluate and push arguments
+	for i := len(node.Arguments) - 1; i >= 0; i-- {
+		argReg, _ := generateNode(output, node.Arguments[i])
+		writeLine(output, fmt.Sprintf("sw $t%d, 0($sp)", argReg))
+		writeLine(output, "addi $sp, $sp, -4")
+	}
+
+	// Call the function
+	funcName := node.Function.(*ast.Variable).Value
+	writeLine(output, fmt.Sprintf("jal %s", funcName))
+
+	// Clean up the stack
+	writeLine(output, fmt.Sprintf("addi $sp, $sp, %d", len(node.Arguments)*4))
+
+	// The result is in $v0, move it to a temporary register
+	resultReg := getNextRegister()
+	writeLine(output, fmt.Sprintf("move $t%d, $v0", resultReg))
+
+	return resultReg, "int" // Assume all functions return int for now
 }
