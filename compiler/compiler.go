@@ -12,6 +12,18 @@ var (
 	floatRegisterCount int
 )
 
+var currentRegister int = 0
+
+func getNextRegister() int {
+	reg := currentRegister
+	currentRegister = (currentRegister + 1) % 8 // Use only $t0 to $t7
+	return reg
+}
+
+func resetRegisterAllocation() {
+	currentRegister = 0
+}
+
 func GenerateMIPS(node ast.Node) string {
 	var output strings.Builder
 	intRegisterCount = 0
@@ -140,7 +152,7 @@ func generateFloatInfixExpression(output *strings.Builder, operator string, left
 }
 
 func generateIntInfixExpression(output *strings.Builder, operator string, leftReg, rightReg int) (int, string) {
-	resultReg := getNextIntRegister()
+	resultReg := getNextRegister()
 	switch operator {
 	case "+":
 		writeLine(output, fmt.Sprintf("add $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
@@ -151,27 +163,18 @@ func generateIntInfixExpression(output *strings.Builder, operator string, leftRe
 	case "/":
 		writeLine(output, fmt.Sprintf("div $t%d, $t%d", leftReg, rightReg))
 		writeLine(output, fmt.Sprintf("mflo $t%d", resultReg))
-	case "%":
-		writeLine(output, fmt.Sprintf("div $t%d, $t%d", leftReg, rightReg))
-		writeLine(output, fmt.Sprintf("mfhi $t%d", resultReg))
-	case "<":
-		writeLine(output, fmt.Sprintf("slt $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
-		return resultReg, "bool"
-	case ">":
-		writeLine(output, fmt.Sprintf("sgt $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
-		return resultReg, "bool"
-	case "<=":
-		writeLine(output, fmt.Sprintf("sle $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
-		return resultReg, "bool"
-	case ">=":
-		writeLine(output, fmt.Sprintf("sge $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
-		return resultReg, "bool"
 	case "==":
 		writeLine(output, fmt.Sprintf("seq $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
-		return resultReg, "bool"
 	case "!=":
 		writeLine(output, fmt.Sprintf("sne $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
-		return resultReg, "bool"
+	case "<":
+		writeLine(output, fmt.Sprintf("slt $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+	case ">":
+		writeLine(output, fmt.Sprintf("sgt $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+	case "<=":
+		writeLine(output, fmt.Sprintf("sle $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
+	case ">=":
+		writeLine(output, fmt.Sprintf("sge $t%d, $t%d, $t%d", resultReg, leftReg, rightReg))
 	default:
 		fmt.Printf("Unsupported integer operation: %s\n", operator)
 		return 0, "int"
@@ -214,22 +217,16 @@ func generateSpeakNow(output *strings.Builder, node *ast.CallExpression) (int, s
 			"li $v0, 1", // System call for print integer
 			"syscall",
 		})
-	case "float":
-		writeLines(output, []string{
-			fmt.Sprintf("mov.s $f12, $f%d", reg),
-			"li $v0, 2", // System call for print float
-			"syscall",
-		})
 	case "bool":
 		labelFalse := getNextLabel()
 		labelEnd := getNextLabel()
 		writeLines(output, []string{
-			fmt.Sprintf("beqz $t%d, %s", reg, labelFalse),
+			fmt.Sprintf("beq $t%d, $zero, %s", reg, labelFalse),
 			"la $a0, true_str",
-			"j " + labelEnd,
-			labelFalse + ":",
+			fmt.Sprintf("j %s", labelEnd),
+			fmt.Sprintf("%s:", labelFalse),
 			"la $a0, false_str",
-			labelEnd + ":",
+			fmt.Sprintf("%s:", labelEnd),
 			"li $v0, 4", // System call for print string
 			"syscall",
 		})
@@ -282,19 +279,17 @@ func getNextLabel() string {
 	labelCount++
 	return fmt.Sprintf("label_%d", labelCount)
 }
-
 func generateIfExpression(output *strings.Builder, ifExpr *ast.IfExpression) (int, string) {
-	condReg, condType := generateNode(output, ifExpr.Condition)
-	if condType != "bool" {
-		fmt.Println("Error: If condition must be a boolean expression")
-		return 0, ""
-	}
+	resetRegisterAllocation()
+
+	// Generate code for the condition
+	condReg, _ := generateNode(output, ifExpr.Condition)
 
 	labelElse := getNextLabel()
 	labelEnd := getNextLabel()
 
 	// If condition is false, jump to else
-	writeLine(output, fmt.Sprintf("beqz $t%d, %s", condReg, labelElse))
+	writeLine(output, fmt.Sprintf("beq $t%d, $zero, %s", condReg, labelElse))
 
 	// Generate code for consequence
 	consequenceReg, consequenceType := generateNode(output, ifExpr.Consequence)
@@ -305,47 +300,19 @@ func generateIfExpression(output *strings.Builder, ifExpr *ast.IfExpression) (in
 	// Else label
 	writeLine(output, fmt.Sprintf("%s:", labelElse))
 
-	var alternativeReg int
-	var alternativeType string
-
 	// Generate code for alternative (if it exists)
 	if ifExpr.Alternative != nil {
-		alternativeReg, alternativeType = generateNode(output, ifExpr.Alternative)
-	} else {
-		// If there's no alternative, use a dummy value
-		alternativeReg = getNextIntRegister()
-		writeLine(output, fmt.Sprintf("li $t%d, 0", alternativeReg)) // Load 0 as a default value
-		alternativeType = "int"
+		_, alternativeType := generateNode(output, ifExpr.Alternative)
+		if consequenceType != alternativeType {
+			fmt.Printf("Warning: Mismatched types in if-else: %s and %s\n", consequenceType, alternativeType)
+		}
 	}
 
 	// End label
 	writeLine(output, fmt.Sprintf("%s:", labelEnd))
 
-	// If types are different, we need to handle this
-	// For simplicity, we'll use a phi-like approach
-	resultReg := getNextIntRegister()
-	if consequenceType == alternativeType {
-		if consequenceType == "float" {
-			writeLine(output, fmt.Sprintf("mov.s $f%d, $f%d", resultReg, consequenceReg))
-			writeLine(output, fmt.Sprintf("mov.s $f%d, $f%d", resultReg, alternativeReg))
-		} else {
-			writeLine(output, fmt.Sprintf("move $t%d, $t%d", resultReg, consequenceReg))
-			writeLine(output, fmt.Sprintf("move $t%d, $t%d", resultReg, alternativeReg))
-		}
-	} else {
-		fmt.Printf("Warning: Mismatched types in if-else: %s and %s\n", consequenceType, alternativeType)
-		// Here you might want to implement type conversion or handle this case differently
-		// For now, we'll just use the consequence
-		if consequenceType == "float" {
-			writeLine(output, fmt.Sprintf("mov.s $f%d, $f%d", resultReg, consequenceReg))
-		} else {
-			writeLine(output, fmt.Sprintf("move $t%d, $t%d", resultReg, consequenceReg))
-		}
-	}
-
-	return resultReg, consequenceType
+	return consequenceReg, consequenceType
 }
-
 func generateBlockStatement(output *strings.Builder, block *ast.BlockStatement) (int, string) {
 	var lastReg int
 	var lastType string

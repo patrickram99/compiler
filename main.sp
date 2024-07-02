@@ -1,5 +1,5 @@
-LoverEra ( 5 == 5 ) {
-    SpeakNow(2 * 5 - 45)
+LoverEra ( SparksFly == SparksFly ) {
+    SpeakNow(SparksFly)
 } RepEra {
     SpeakNow(BadBlood)
 }
