@@ -16,5 +16,5 @@ func main() {
 	fmt.Printf("¡Bienvenido %s! al primer lenguaje de programación de Taylor Swift!\n",
 		user.Username)
 	fmt.Printf("Burn some commands\n")
-	repl.Start("main.sp", os.Stdout)
+	repl.Start("main3.sp", os.Stdout)
 }

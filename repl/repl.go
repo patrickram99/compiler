@@ -1,7 +1,6 @@
 package repl
 
 import (
-	"fmt"
 	"io"
 	"log"
 	"main/compiler"
@@ -40,7 +39,7 @@ func Start(filePath string, out io.Writer) {
 	p := parser.New(l)
 	program := p.ParseProgram()
 
-	PrintAST(program, "  ")
+	// PrintAST(program, "  ")
 
 	// Create Graphviz image
 	err = CreateGraphvizImage(program, "ast.jpeg")
@@ -51,7 +50,7 @@ func Start(filePath string, out io.Writer) {
 	}
 
 	mipsCode := compiler.GenerateMIPS(program)
-	fmt.Println(mipsCode) // Print the generated code
+	// fmt.Println(mipsCode) // Print the generated code
 
 	writeToFile("out.s", mipsCode)
 
