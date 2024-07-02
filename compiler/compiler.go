@@ -6,6 +6,7 @@ import (
 	"strings"
 )
 
+var currentRegister int = 0
 var (
 	labelCount         int
 	intRegisterCount   int
@@ -14,7 +15,19 @@ var (
 	stringCount        int
 )
 
-var currentRegister int = 0
+type SymbolTable struct {
+	symbols map[string]int
+	offset  int
+}
+
+var symbolTable SymbolTable
+
+func initSymbolTable() {
+	symbolTable = SymbolTable{
+		symbols: make(map[string]int),
+		offset:  0,
+	}
+}
 
 func getNextRegister() int {
 	reg := currentRegister
@@ -31,6 +44,7 @@ func GenerateMIPS(node ast.Node) string {
 	floatRegisterCount = 0
 	stringLiterals = make(map[string]string)
 	stringCount = 0
+	initSymbolTable()
 
 	writeLines(&output, []string{
 		".data",
@@ -51,13 +65,18 @@ func GenerateMIPS(node ast.Node) string {
 		".text",
 		".globl main",
 		"main:",
+		"move $fp, $sp",      // Set up frame pointer
+		"sw $ra, 0($sp)",     // Save return address
+		"addiu $sp, $sp, -4", // Adjust stack pointer
 	})
 
 	// Generate main program code
 	generateNode(&output, node)
 
 	writeLines(&output, []string{
-		"li $v0, 10", // Exit syscall
+		"lw $ra, 4($sp)",    // Restore return address
+		"addiu $sp, $sp, 4", // Restore stack pointer
+		"li $v0, 10",        // Exit syscall
 		"syscall",
 	})
 
@@ -113,6 +132,12 @@ func generateNode(output *strings.Builder, node ast.Node) (int, string) {
 		return generateIfExpression(output, n)
 	case *ast.BlockStatement:
 		return generateBlockStatement(output, n)
+	case *ast.LetStatement:
+		generateVariableDeclaration(output, n)
+		return 0, "" // Return values are not used for declarations
+
+	case *ast.Variable:
+		return generateVariableAccess(output, n)
 
 	}
 	return 0, ""
@@ -398,4 +423,37 @@ func generateStringInfixExpression(output *strings.Builder, operator string, lef
 		return 0, "string"
 	}
 	return resultReg, "string"
+}
+
+// ------------------------------------Variables-------------------------------------
+func generateVariableDeclaration(output *strings.Builder, node *ast.LetStatement) {
+	varName := node.Name.Value
+	valueReg, valueType := generateNode(output, node.Value)
+
+	// Allocate space on the stack
+	symbolTable.offset -= 4
+	symbolTable.symbols[varName] = symbolTable.offset
+
+	// Store the value on the stack
+	switch valueType {
+	case "int", "bool":
+		writeLine(output, fmt.Sprintf("sw $t%d, %d($sp)", valueReg, symbolTable.offset))
+	case "float":
+		writeLine(output, fmt.Sprintf("s.s $f%d, %d($sp)", valueReg, symbolTable.offset))
+	case "string":
+		writeLine(output, fmt.Sprintf("sw $t%d, %d($sp)", valueReg, symbolTable.offset))
+	default:
+		fmt.Printf("Unsupported type for variable declaration: %s\n", valueType)
+	}
+}
+
+func generateVariableAccess(output *strings.Builder, node *ast.Variable) (int, string) {
+	varName := node.Value
+	if offset, ok := symbolTable.symbols[varName]; ok {
+		reg := getNextRegister()
+		writeLine(output, fmt.Sprintf("lw $t%d, %d($sp)", reg, offset))
+		return reg, "int" // Assume int for simplicity, you may need to store type information
+	}
+	fmt.Printf("Undefined variable: %s\n", varName)
+	return 0, ""
 }
